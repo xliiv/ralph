@@ -7,6 +7,7 @@ from __future__ import unicode_literals
 
 from django.core.urlresolvers import reverse
 from django.test import TestCase
+from django.test.client import Client
 
 from ralph.account.models import Perm, BoundPerm
 from ralph.ui.tests.global_utils import (
@@ -18,7 +19,8 @@ from ralph.ui.tests.global_utils import (
 
 class LoginRedirectTest(TestCase):
     def setUp(self):
-        self.success_login_url = reverse('find_user_home')
+        self.client = Client()
+        self.login_url = '/login/'
         self.request_headers = {'HTTP_HOST': 'localhost:8000'}
 
     def _get_user_by_perm(self, perm):
@@ -36,11 +38,10 @@ class LoginRedirectTest(TestCase):
     def check_redirection(self, hierarchy_data):
         for perm, home_url in hierarchy_data:
             user = self._get_user_by_perm(perm)
-            self.client = login_as_user(user)
-            response = self.client.get(
-                self.success_login_url,
+            response = self.client.post(
+                self.login_url,
+                {'username': user.username, 'password': 'ralph'},
                 follow=True,
-                **self.request_headers
             )
             self.assertEqual(response.request['PATH_INFO'], home_url)
 
@@ -50,11 +51,10 @@ class LoginRedirectTest(TestCase):
             is_staff=False,
             is_superuser=False,
         )
-        self.client = login_as_user(no_access_user)
-        response = self.client.get(
-            self.success_login_url,
+        response = self.client.post(
+            self.login_url,
+            {'username': no_access_user.username, 'password': 'ralph'},
             follow=True,
-            **self.request_headers
         )
         self.assertEqual(response.status_code, 403)
 
@@ -72,11 +72,10 @@ class LoginRedirectTest(TestCase):
         ]
         for perm in test_data:
             user = self._get_user_by_perm(perm)
-            self.client = login_as_user(user)
-            response = self.client.get(
-                self.success_login_url,
+            response = self.client.post(
+                self.login_url,
+                {'username': user.username, 'password': 'ralph'},
                 follow=True,
-                **self.request_headers
             )
             self.assertEqual(
                 response.request['PATH_INFO'],
