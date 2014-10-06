@@ -22,7 +22,6 @@ from ralph.discovery.api import (
     DeviceWithPricingResource,
     DevResource,
     IPAddressResource,
-    ModelGroupResource,
     ModelResource,
     NetworkKindsResource,
     NetworksResource,
@@ -41,26 +40,32 @@ from ralph.cmdb.api import (
     CIOwnersResource,
     CIRelationResource,
     CIResource,
+    CIResourceV010,
     CITypesResource,
     ServiceResource,
+    ProfileResource,
+    UserResource,
 )
 from ralph.ui.views.deploy import AddVM
-from ralph.discovery.api_donpedro import WindowsDeviceResource
+from ralph.app import mount_api
 from ralph.scan.api import ExternalPluginResource
 from ralph.ui.views.common import VhostRedirectView
+from ralph.util import clone_class
 
 from django.conf import settings
 from django.contrib import admin
 from ajax_select import urls as ajax_select_urls
 
 
-DISCOVERY_DISABLED = getattr(settings, 'DISCOVERY_DISABLED', False)
-
 handler403 = 'ralph.account.views.HTTP403'
 
 admin.autodiscover()
 
 v09_api = Api(api_name='v0.9')
+mount_api(v09_api)
+
+v010_api = Api(api_name='v0.10')
+mount_api(v010_api)
 # business API
 for r in (VentureResource, VentureLightResource, RoleResource,
           RoleLightResource, DepartmentResource, RolePropertyTypeResource,
@@ -70,13 +75,18 @@ for r in (VentureResource, VentureLightResource, RoleResource,
     v09_api.register(r())
 
 # discovery API
-for r in (IPAddressResource, NetworksResource, ModelGroupResource,
-          ModelResource, PhysicalServerResource, RackServerResource,
-          BladeServerResource, VirtualServerResource, DevResource,
-          WindowsDeviceResource, DeviceWithPricingResource,
-          NetworkKindsResource):
-    if DISCOVERY_DISABLED and r == WindowsDeviceResource:
-        continue
+for r in (
+    IPAddressResource,
+    NetworksResource,
+    ModelResource,
+    PhysicalServerResource,
+    RackServerResource,
+    BladeServerResource,
+    VirtualServerResource,
+    DevResource,
+    DeviceWithPricingResource,
+    NetworkKindsResource
+):
     v09_api.register(r())
 
 # CMDB API
@@ -85,7 +95,13 @@ for r in (BusinessLineResource, ServiceResource, CIResource,
           CIOwnersResource, CIChangePuppetResource,
           CIChangeZabbixTriggerResource, CIChangeCMDBHistoryResource,
           CITypesResource, CILayersResource):
-    v09_api.register(r())
+    v09_api.register(clone_class(r)())
+for r in (BusinessLineResource, ServiceResource, CIResourceV010,
+          CIChangeResource, CIChangeGitResource, CIOwnersResource,
+          CIChangePuppetResource, CIChangeZabbixTriggerResource,
+          CIChangeCMDBHistoryResource, CITypesResource, CILayersResource,
+          ProfileResource, UserResource):
+    v010_api.register(clone_class(r)())
 
 # deployment API
 for r in (DeploymentResource,):
@@ -110,11 +126,6 @@ urlpatterns = patterns(
     url(r'^login/', 'django.contrib.auth.views.login',
         {'template_name': 'admin/login.html'}),
     url(r'^logout/', 'django.contrib.auth.views.logout'),
-    url(r'^ventures/(?P<venture_id>.+)/$',
-        'ralph.business.views.show_ventures',
-        name='business-show-venture'),
-    url(r'^ventures/$', 'ralph.business.views.show_ventures',
-        name='business-show-ventures'),
     url(r'^browse/$', RedirectView.as_view(url='/ui/racks/')),
     url(r'^business/$', RedirectView.as_view(url='/ui/ventures/-/venture/')),
     url(r'^business/ventures/$', RedirectView.as_view(url='/ventures/')),
@@ -129,7 +140,7 @@ urlpatterns = patterns(
     url(r'^dhcp-config-head/', 'ralph.dnsedit.views.dhcp_config_head'),
     url(r'^cmdb/', include('ralph.cmdb.urls')),
     url(r'^api/add_vm', AddVM.as_view()),
-    url(r'^api/', include(v09_api.urls)),
+    url(r'^api/', include(v09_api.urls + v010_api.urls)),
     url(r'^admin/', include(admin.site.urls)),
     url(r'^pxe/_(?P<file_type>[^/]+)$',
         'ralph.deployment.views.preboot_type_view', name='preboot-type-view'),

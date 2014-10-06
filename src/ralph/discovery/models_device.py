@@ -14,20 +14,29 @@ import re
 import sys
 import os
 
+from django.conf import settings
+from django.core.urlresolvers import reverse
 from django.db import models as db
 from django.db import IntegrityError, transaction
 from django.utils.translation import ugettext_lazy as _
-from lck.django.common.models import (Named, WithConcurrentGetOrCreate,
-                                      MACAddressField, SavePrioritized,
-                                      SoftDeletable, TimeTrackable)
+from lck.django.common.models import (
+    MACAddressField,
+    Named,
+    SavePrioritized,
+    SoftDeletable,
+    TimeTrackable,
+    WithConcurrentGetOrCreate,
+)
 from lck.django.choices import Choices
 from lck.django.common import nested_commit_on_success
 from lck.django.tags.models import Taggable
 from django.utils.html import escape
 
+from ralph.cmdb import models_ci
 from ralph.discovery.models_component import is_mac_valid, Ethernet
 from ralph.discovery.models_util import LastSeen, SavingUser
 from ralph.util import Eth
+from ralph.util.models import SyncFieldMixin
 
 
 BLADE_SERVERS = [
@@ -54,6 +63,10 @@ DISK_PRODUCT_BLACKLIST = set([
     'logical volume', 'virtualdisk', 'virtual-disk', 'multi-flex',
     '1815      fastt', 'comstar',
 ])
+
+SHOW_ONLY_SERVICES_CALCULATED_IN_SCROOGE = getattr(
+    settings, 'SHOW_ONLY_SERVICES_CALCULATED_IN_SCROOGE', False
+)
 
 
 class DeviceType(Choices):
@@ -148,27 +161,6 @@ class MarginKind(Named):
         verbose_name_plural = _("margin kinds")
 
 
-class DeviceModelGroup(Named, TimeTrackable, SavingUser):
-    price = db.PositiveIntegerField(
-        verbose_name=_("purchase price"),
-        null=True,
-        blank=True,
-    )
-    type = db.PositiveIntegerField(
-        verbose_name=_("device type"),
-        choices=DeviceType(),
-        default=DeviceType.unknown.id,
-    )
-    slots = db.FloatField(verbose_name=_("number of slots"), default=0)
-
-    class Meta:
-        verbose_name = _("group of device models")
-        verbose_name_plural = _("groups of device models")
-
-    def get_count(self):
-        return Device.objects.filter(model__group=self).count()
-
-
 class DeviceModel(SavePrioritized, WithConcurrentGetOrCreate, SavingUser):
     name = db.CharField(
         verbose_name=_("name"),
@@ -179,14 +171,6 @@ class DeviceModel(SavePrioritized, WithConcurrentGetOrCreate, SavingUser):
         verbose_name=_("device type"),
         choices=DeviceType(),
         default=DeviceType.unknown.id,
-    )
-    group = db.ForeignKey(
-        DeviceModelGroup,
-        verbose_name=_("group"),
-        null=True,
-        blank=True,
-        default=None,
-        on_delete=db.SET_NULL,
     )
     chassis_size = db.PositiveIntegerField(
         verbose_name=_("chassis size"),
@@ -203,11 +187,6 @@ class DeviceModel(SavePrioritized, WithConcurrentGetOrCreate, SavingUser):
 
     def get_count(self):
         return self.device_set.count()
-
-    def get_price(self):
-        if self.group:
-            return self.group.price
-        return 0
 
     def get_json(self):
         return {
@@ -273,6 +252,65 @@ class UptimeSupport(db.Model):
         return "%s, %02d:%02d:%02d" % (msg, hours, minutes, seconds)
 
 
+class DeviceEnvironmentManager(db.Manager):
+    def get_query_set(self):
+        return super(DeviceEnvironmentManager, self).get_query_set().filter(
+            type__name=models_ci.CI_TYPES.ENVIRONMENT,
+            state=models_ci.CI_STATE_TYPES.ACTIVE,
+        )
+
+
+class DeviceEnvironment(models_ci.CI):
+    """
+    Catalog of environment where device is used, like: prod, test, ect.
+    """
+    objects = DeviceEnvironmentManager()
+
+    class Meta:
+        proxy = True
+
+    def __unicode__(self):
+        return self.name
+
+
+class ServiceCatalogManager(db.Manager):
+    def get_query_set(self):
+        if SHOW_ONLY_SERVICES_CALCULATED_IN_SCROOGE:
+            ids = models_ci.CIAttributeValue.objects.filter(
+                attribute__pk=7,
+                value_boolean__value=True,
+                ci__type=models_ci.CI_TYPES.SERVICE,
+            ).values('ci')
+            services = super(
+                ServiceCatalogManager,
+                self,
+            ).get_query_set().filter(
+                state=models_ci.CI_STATE_TYPES.ACTIVE,
+                id__in=ids,
+            )
+        else:
+            services = super(
+                ServiceCatalogManager, self,
+            ).get_query_set().filter(
+                type=models_ci.CI_TYPES.SERVICE,
+                state=models_ci.CI_STATE_TYPES.ACTIVE,
+            )
+        return services
+
+
+class ServiceCatalog(models_ci.CI):
+    """
+    Catalog of services where device is used, like: allegro.pl
+    """
+    objects = ServiceCatalogManager()
+
+    class Meta:
+        proxy = True
+
+    def __unicode__(self):
+        return self.name
+
+
 class Device(
     LastSeen,
     Taggable.NoDefaultTags,
@@ -281,6 +319,7 @@ class Device(
     UptimeSupport,
     SoftDeletable,
     SavingUser,
+    SyncFieldMixin,
 ):
     name = db.CharField(
         verbose_name=_("name"),
@@ -486,6 +525,18 @@ class Device(
         default=None,
     )
     verified = db.BooleanField(verbose_name=_("verified"), default=False)
+    service = db.ForeignKey(
+        ServiceCatalog,
+        default=None,
+        null=True,
+        on_delete=db.PROTECT,
+    )
+    device_environment = db.ForeignKey(
+        DeviceEnvironment,
+        default=None,
+        null=True,
+        on_delete=db.PROTECT,
+    )
 
     class Meta:
         verbose_name = _("device")
@@ -559,12 +610,17 @@ class Device(
         if sn:
             sn = sn.strip()
         if sn in SERIAL_BLACKLIST:
+            # we don't raise an exception here because blacklisted/missing sn
+            # is not enough to fail device's creation
             sn = None
         if not any((sn, ethernets, allow_stub)):
-            raise ValueError(
-                "Neither `sn` nor `ethernets` given.  Use `allow_stub` "
-                "to override."
-            )
+            if sn in SERIAL_BLACKLIST:
+                msg = ("You have provided `sn` which is blacklisted. "
+                       "Please use a different one.")
+            else:
+                msg = ("Neither `sn` nor `ethernets` given.  Use `allow_stub` "
+                       "to override.")
+            raise ValueError(msg)
         if sn:
             try:
                 sndev = Device.admin_objects.get(sn=sn)
@@ -697,10 +753,7 @@ class Device(
         return None
 
     def get_model_name(self):
-        try:
-            return self.model.group.name
-        except AttributeError:
-            return self.model.name if self.model else ''
+        return self.model.name if self.model else ''
 
     def get_position(self):
         if self.position:
@@ -764,7 +817,7 @@ class Device(
         details['fibrechannels'] = self.fibrechannel_set.all()
         return details
 
-    def save(self, *args, **kwargs):
+    def save(self, sync_fields=True, *args, **kwargs):
         if self.model and self.model.type == DeviceType.blade_server.id:
             if not self.position:
                 self.position = self.get_position()
@@ -795,7 +848,32 @@ class Device(
             else:
                 name = filename
             self.saving_plugin = name
-        return super(Device, self).save(*args, **kwargs)
+
+        if sync_fields and 'ralph_assets' in settings.INSTALLED_APPS:
+            SyncFieldMixin.save(self, *args, **kwargs)
+        return super(Device, self).save(
+            sync_fields=sync_fields,
+            *args,
+            **kwargs
+        )
+
+    def get_asset(self):
+        asset = None
+        if self.id and 'ralph_assets' in settings.INSTALLED_APPS:
+            from ralph_assets.models import Asset
+            try:
+                asset = Asset.objects.get(
+                    device_info__ralph_device_id=self.id,
+                )
+            except Asset.DoesNotExist:
+                pass
+        return asset
+
+    def get_synced_objs_and_fields(self):
+        # Implementation of the abstract method from SyncFieldMixin.
+        obj = self.get_asset()
+        fields = ['service', 'device_environment']
+        return [(obj, fields)] if obj else []
 
     def get_property_set(self):
         props = {}
@@ -820,6 +898,10 @@ class Device(
             ]
         ))
         return props
+
+    @property
+    def url(self):
+        return reverse('search', args=('info', self.id))
 
 
 class Connection(db.Model):

@@ -7,8 +7,9 @@ from __future__ import unicode_literals
 
 import mock
 import StringIO
+from uuid import uuid1
 
-from factory import Sequence
+from factory import Sequence, lazy_attribute, Factory
 from factory.django import DjangoModelFactory
 
 from ralph.discovery.models_device import Device
@@ -18,6 +19,25 @@ class DeviceFactory(DjangoModelFactory):
     FACTORY_FOR = Device
 
     name = Sequence(lambda n: 'Device#{}'.format(n))
+
+    @lazy_attribute
+    def barcode(self):
+        return str(uuid1())
+
+
+class Tenant(object):
+    def __init__(self, *args, **kwargs):
+        for k, v in kwargs.iteritems():
+            setattr(self, k, v)
+
+
+class TenantFactory(Factory):
+    FACTORY_FOR = Tenant
+
+    id = Sequence(lambda n: '12345{}'.format(n))
+    name = Sequence(lambda n: 'sample_tenant{}'.format(n))
+    description = 'qwerty;asdfg;'
+    enabled = True
 
 
 class MockSSH(object):

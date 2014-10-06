@@ -8,7 +8,6 @@ from __future__ import unicode_literals
 
 from django import forms
 from django.contrib import admin
-from django.core.urlresolvers import reverse_lazy
 from django.utils.translation import ugettext_lazy as _
 from lck.django.common.admin import (ModelAdmin,
                                      ForeignKeyAutocompleteTabularInline)
@@ -22,13 +21,11 @@ from ralph.business.models import (
     RolePropertyTypeValue,
     RolePropertyValue,
     Venture,
-    VentureExtraCost,
-    VentureExtraCostType,
     VentureRole,
 )
-from ralph.cmdb.models_ci import CIOwner, CI, CIOwnershipType
 from ralph.integration.admin import RoleIntegrationInline
 from ralph.ui.widgets import ReadOnlyWidget
+from ralph.util.di import is_extra_available, get_extra_data
 
 import ralph.util.venture as util_venture
 
@@ -53,32 +50,12 @@ class VenturePropertyInline(admin.TabularInline):
     exclude = ('role',)
 
 
-class VentureOwnerInline(admin.TabularInline):
-    model = CIOwner
-    exclude = ('created', 'modified')
-    extra = 4
-
-
 class VentureRoleInline(ForeignKeyAutocompleteTabularInline):
     model = VentureRole
     exclude = ('created', 'modified', 'preboot')
     extra = 4
     related_search_fields = {
         'parent': ['^name'],
-    }
-
-
-class VentureExtraCostInline(admin.TabularInline):
-    model = VentureExtraCost
-    exclude = ('modified',)
-
-
-class AutocompleteVentureExtraCostInline(ForeignKeyAutocompleteTabularInline):
-    model = VentureExtraCost
-    exclude = ('created', 'modified',)
-    extra = 3
-    related_search_fields = {
-        'venture': ['^name'],
     }
 
 
@@ -121,12 +98,6 @@ class VentureRoleAdmin(ModelAdmin):
     save_on_top = True
 
 admin.site.register(VentureRole, VentureRoleAdmin)
-
-
-class VentureExtraCostTypeAdmin(ModelAdmin):
-    inlines = [AutocompleteVentureExtraCostInline, ]
-
-admin.site.register(VentureExtraCostType, VentureExtraCostTypeAdmin)
 
 
 class RolePropertyValueInline(admin.TabularInline):
@@ -217,7 +188,6 @@ class VentureAdminVerifiedForm(VentureAdminForm):
 class VentureAdmin(ModelAdmin):
     inlines = [
         SubVentureInline,
-        VentureExtraCostInline,
         VentureRoleInline,
         VenturePropertyInline,
     ]
@@ -237,47 +207,23 @@ class VentureAdmin(ModelAdmin):
         from ralph.discovery.models import Device
         return unicode(Device.objects.filter(venture=self).count())
     members.short_description = _("members")
-
-    def technical_owners(self):
-        ci = CI.get_by_content_object(self)
-        if not ci:
-            return []
-        owners = CIOwner.objects.filter(
-            ciownership__type=CIOwnershipType.technical.id,
-            ci=ci
-        )
-        part_url = reverse_lazy('ci_edit', kwargs={'ci_id': str(ci.id)})
-        link_text = ", ".join([unicode(owner)
-                               for owner in owners]) if owners else '[add]'
-        return "<a href=\"{}\">{}</a>".format(part_url, link_text)
-    technical_owners.short_description = _("technical owners")
-    technical_owners.allow_tags = True
-
-    def business_owners(self):
-        ci = CI.get_by_content_object(self)
-        if not ci:
-            return []
-        owners = CIOwner.objects.filter(
-            ciownership__type=CIOwnershipType.business.id,
-            ci=ci
-        )
-        part_url = reverse_lazy('ci_edit', kwargs={'ci_id': str(ci.id)})
-        link_text = ", ".join([unicode(owner)
-                               for owner in owners]) if owners else '[add]'
-        return "<a href=\"{}\">{}</a>".format(part_url, link_text)
-    business_owners.short_description = _("business owners")
-    business_owners.allow_tags = True
-
-    list_display = (
+    list_display = [
         'name',
         'path',
         'data_center',
         members,
-        technical_owners,
-        business_owners,
         'business_segment',
         'profit_center',
-    )
+    ]
+    if is_extra_available('ralph_obj_owner_column_factory'):
+        list_display.insert(4, get_extra_data(
+            'ralph_obj_owner_column_factory',
+            'technical'
+        ))
+        list_display.insert(5, get_extra_data(
+            'ralph_obj_owner_column_factory',
+            'business'
+        ))
     list_filter = ('data_center', 'show_in_ralph',)
     search_fields = (
         'name',

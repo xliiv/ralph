@@ -20,6 +20,8 @@ execfile(namespace_package_support)
 #
 from datetime import timedelta
 
+PLUGGABLE_APPS = ('cmdb',)
+
 SITE_ID = 1
 USE_I18N = True
 USE_L10N = True  # FIXME: breaks contents of l7d date fields on form reload
@@ -74,7 +76,6 @@ INSTALLED_APPS = [
     'tastypie',
     'ralph.account',
     'ralph.business',
-    'ralph.cmdb',
     'ralph.discovery',
     'ralph.deployment',
     'ralph.integration',
@@ -94,6 +95,7 @@ TEMPLATE_CONTEXT_PROCESSORS = (
     'django.core.context_processors.media',
     'django.core.context_processors.static',
     'django.contrib.messages.context_processors.messages',
+    'ralph.context_processors.info',
 )
 # See http://docs.djangoproject.com/en/dev/topics/logging for
 # more details on how to customize your logging configuration.
@@ -171,7 +173,6 @@ LOGIN_REDIRECT_URL = '/browse/'
 LOGIN_URL = '/login/'
 LOGOUT_URL = '/logout/'
 HOME_PAGE_URL_NAME = 'search'
-SANITY_CHECK_PING_ADDRESS = 'www.allegro.pl'
 SANITY_CHECK_IP2HOST_IP = '8.8.8.8'
 SANITY_CHECK_IP2HOST_HOSTNAME_REGEX = r'.*google.*'
 
@@ -291,15 +292,13 @@ ZABBIX_USER = None
 ZABBIX_PASSWORD = None
 ZABBIX_DEFAULT_GROUP = 'test'
 BUGTRACKER_URL = 'https://github.com/allegro/ralph/issues/new'
+CHANGELOG_URL = 'http://ralph.allegrogroup.com/doc/changes.html'
 SO_URL = None
-OPENSTACK_URL = None
-OPENSTACK_USER = None
-OPENSTACK_PASS = None
+OPENSTACK_SITES = None
 IBM_SYSTEM_X_USER = None
 IBM_SYSTEM_X_PASSWORD = None
 IDRAC_USER = None
 IDRAC_PASSWORD = None
-OPENSTACK_EXTRA_QUERIES = []
 FISHEYE_URL = ""
 FISHEYE_PROJECT_NAME = ""
 VMWARE_USER = None
@@ -347,7 +346,7 @@ API_THROTTLING = {
     'timeframe': 3600,
     'expiration': None,
 }
-RQ_QUEUE_LIST = ('reports', 'email', 'cmdb_git', 'cmdb_jira', 'cmdb_jira_int',
+RQ_QUEUE_LIST = ('reports', 'reports_pricing', 'email', 'cmdb_git', 'cmdb_jira', 'cmdb_jira_int',
                  'cmdb_zabbix', 'cmdb_assets')
 RQ_QUEUES = {
     'default': {
@@ -358,13 +357,19 @@ RQ_QUEUES = {
 }
 for queue in RQ_QUEUE_LIST:
     RQ_QUEUES[queue] = dict(RQ_QUEUES['default'])
+
+# If True, objects from Ralph Core will have autocreated CI's in the CMDB
 AUTOCI = True
+
 AUTOCI_SKIP_MSG = 'AUTOCI is disabled'
 HAMSTER_API_URL = ""
 SCALEME_API_URL = ""
 DEFAULT_SOA_RECORD_CONTENT = ''
 DEAD_PING_COUNT = 2
 SCAN_AUTOMERGE_MODE = True
+
+# If True, autocreate misssing host names(CI's) when importing the triggers from ZABBIX into the cmdb
+ZABBIX_IMPORT_HOSTS = False
 # </template>
 
 SCAN_POSTPROCESS_ENABLED_JOBS = []

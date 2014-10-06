@@ -6,19 +6,20 @@ from __future__ import unicode_literals
 
 import copy
 import datetime
-
 import ipaddr
 
 import django_rq
+import pluggableapp
 import rq
 from django.conf import settings
 from django.contrib import messages
-from django.core.urlresolvers import reverse
+from django.core.exceptions import ImproperlyConfigured
 from django.core.paginator import Paginator
+from django.core.urlresolvers import reverse
 from django.db import models as db
 from django.http import HttpResponseRedirect, HttpResponseForbidden, Http404
 from django.shortcuts import get_object_or_404
-from django.utils import timezone
+from django.utils import importlib, timezone
 from django.utils.translation import ugettext_lazy as _
 from django.views.generic import (
     DetailView,
@@ -26,17 +27,17 @@ from django.views.generic import (
     TemplateView,
     UpdateView,
 )
-
 from lck.django.common import nested_commit_on_success
 from lck.django.tags.models import Language, TagStem
+from bob.menu import MenuItem, Divider
 from bob.data_table import DataTableColumn, DataTableMixin
-from bob.menu import MenuItem
-import pluggableapp
 from powerdns.models import Record
 
 from ralph.discovery.models_component import Ethernet
 from ralph.account.models import Perm, get_user_home_page_url, ralph_permission
 from ralph.app import RalphModule
+from ralph.menu import Menu
+from ralph.scan.api import SCAN_RESULT_TTL
 from ralph.scan.errors import Error as ScanError
 from ralph.scan.manual import queue_scan_address
 from ralph.scan.forms import DiffForm
@@ -51,14 +52,13 @@ from ralph.scan.data import (
 )
 from ralph.scan.diff import diff_results, sort_results
 from ralph.scan.models import ScanSummary
-from ralph.scan.util import update_scan_summary, get_pending_scans
+from ralph.scan.util import get_pending_changes, update_scan_summary
 from ralph.business.models import (
     RoleProperty,
     RolePropertyValue,
     Venture,
     VentureRole,
 )
-from ralph.cmdb.models import CI
 from ralph.deployment.models import Deployment, DeploymentStatus
 from ralph.deployment.util import get_next_free_hostname, get_first_free_ip
 from ralph.dnsedit.models import DHCPEntry
@@ -77,17 +77,13 @@ from ralph.discovery.models import (
     IPAddress,
     Network,
 )
-from ralph.discovery.models_history import (
-    FOREVER_DATE,
-    ALWAYS_DATE,
-)
+from ralph.menu import menu_class as ralph_menu
+from ralph.util import details, presentation
 from ralph.util.plugin import BY_NAME as AVAILABLE_PLUGINS
-from ralph.ui.forms import ChooseAssetForm
+from ralph.ui.forms import ChooseAssetForm, VentureServiceFilterForm
 from ralph.ui.forms.devices import (
     DeviceInfoForm,
     DeviceInfoVerifiedForm,
-    DevicePricesForm,
-    DevicePurchaseForm,
     PropertyForm,
     DeviceBulkForm,
 )
@@ -101,7 +97,6 @@ from ralph.ui.forms.deployment import (
     ServerMoveStep2FormSet,
     ServerMoveStep3FormSet,
 )
-from ralph import VERSION
 
 
 SAVE_PRIORITY = 215
@@ -156,10 +151,26 @@ def _get_balancers(dev):
         }
 
 
-def _get_details(dev, purchase_only=False, with_price=False,
-                 ignore_deprecation=False, exclude=[]):
-    # a leftover from ralph.util.pricing
-    pass
+def _get_details(dev):
+    for detail in details.details_all(dev):
+        if 'icon' not in detail:
+            if detail['group'] == 'dev':
+                detail['icon'] = presentation.get_device_model_icon(
+                    detail.get('model'),
+                )
+            else:
+                detail['icon'] = presentation.get_component_model_icon(
+                    detail.get('model'),
+                )
+        if (
+            detail['group'] != 'dev' and
+            'size' not in detail and
+            detail.get('model')
+        ):
+            detail['size'] = detail['model'].size
+        if not detail.get('model'):
+            detail['model'] = detail.get('model_name', '')
+        yield detail
 
 
 class ACLGateway(object):
@@ -169,8 +180,125 @@ class ACLGateway(object):
         return super(ACLGateway, self).dispatch(*args, **kwargs)
 
 
-class BaseMixin(ACLGateway):
-    section = 'home'
+class AdminMenu(Menu):
+    module = MenuItem(
+        'Admin',
+        name='admin',
+        fugue_icon='fugue-toolbox',
+        href='/admin/',
+        pull_right=True,
+    )
+
+
+class UserMenu(Menu):
+
+    def __init__(self, request, **kwargs):
+        self.module = MenuItem(
+            '{}'.format(request.user),
+            name='user_preference',
+            fugue_icon='fugue-user',
+            view_name='user_preference',
+            pull_right=True,
+            dropdown=True,
+            subitems=[
+                MenuItem(
+                    'Preferences',
+                    name='user_preference',
+                    fugue_icon='fugue-application-task',
+                    view_name='user_preference',
+                ),
+                Divider(),
+                MenuItem(
+                    'Logout',
+                    name='logout',
+                    fugue_icon='fugue-door-open-out',
+                    view_name='logout',
+                ),
+            ]
+        )
+        super(UserMenu, self).__init__(request, **kwargs)
+
+
+class MenuMixin(object):
+    module_name = None
+    submodule_name = None
+    sidebar_item_name = None
+
+    def dispatch(self, request, *args, **kwargs):
+        self.menus = [ralph_menu(request)]
+        if request.user.is_staff:
+            self.menus.append(AdminMenu(request))
+        self.menus.append(UserMenu(request))
+        for app in pluggableapp.app_dict.values():
+            if not isinstance(app, RalphModule):
+                continue
+            menu_module = importlib.import_module(
+                '.'.join([app.module_name, 'menu'])
+            )
+            if menu_module:
+                menu_class = getattr(
+                    menu_module, 'menu_class', None
+                )
+                if not menu_class:
+                    raise Exception(
+                        'Please provide menu_class.'
+                    )
+                self.menus.append(menu_class(request))
+        return super(MenuMixin, self).dispatch(request, *args, **kwargs)
+
+    @property
+    def current_menu(self):
+        for menu in self.menus:
+            if menu.module.name == self.module_name:
+                return menu
+
+    @property
+    def active_module(self):
+        if not self.module_name:
+            raise ImproperlyConfigured(
+                '{view} required definition of \'module_name\''.format(
+                    view=self.__class__.__name__))
+        return self.module_name
+
+    @property
+    def active_submodule(self):
+        if not self.submodule_name:
+            raise ImproperlyConfigured(
+                '{view} required definition of \'submodule_name\''.format(
+                    view=self.__class__))
+        return self.submodule_name
+
+    @property
+    def active_sidebar_item(self):
+        return self.sidebar_item_name
+
+    def get_modules(self):
+        main_menu = [menu.module for menu in self.menus]
+        return main_menu
+
+    def get_submodules(self):
+        return self.current_menu.get_submodules()
+
+    def get_context_data(self, **kwargs):
+        context = super(MenuMixin, self).get_context_data(**kwargs)
+        current_menu = self.current_menu
+        sidebar = current_menu.get_sidebar_items().get(
+            self.active_submodule, None
+        )
+        context.update({
+            'main_menu': self.get_modules(),
+            'submodules': self.get_submodules(),
+            'sidebar': sidebar,
+            'active_menu': current_menu,
+            'active_module': self.active_module,
+            'active_submodule': self.active_submodule,
+            'active_sidebar_item': self.active_sidebar_item,
+        })
+        return context
+
+
+class BaseMixin(MenuMixin, ACLGateway):
+    module_name = 'module_core'
 
     def __init__(self, *args, **kwargs):
         super(BaseMixin, self).__init__(*args, **kwargs)
@@ -179,20 +307,30 @@ class BaseMixin(ACLGateway):
         self.status = ''
 
     def tab_href(self, name, obj=''):
+        section = self.active_submodule
         if not obj and self.object:
             obj = self.object.id
-        if self.section == 'racks':
+        if section == 'racks':
             args = [self.kwargs.get('rack'), name, obj]
-        elif self.section == 'networks':
+        elif section == 'networks':
             args = [self.kwargs.get('network'), name, obj]
-        elif self.section == 'ventures':
+        elif section == 'ventures':
             args = [self.kwargs.get('venture'), name, obj]
-        elif self.section == 'search':
+        elif section == 'search':
             args = [name, obj]
+        elif section == 'services':
+            args = []
+            if self.kwargs.get('businessline_id'):
+                args.append(self.kwargs['businessline_id'])
+                if self.kwargs.get('service_id'):
+                    args.append(self.kwargs['service_id'])
+                    if self.kwargs.get('environment_id'):
+                        args.append(self.kwargs['environment_id'])
+            args.extend([name, obj])
         else:
             args = []
         return '%s?%s' % (
-            reverse(self.section, args=args),
+            reverse(section, args=args),
             self.request.GET.urlencode(),
         )
 
@@ -218,16 +356,6 @@ class BaseMixin(ACLGateway):
                 MenuItem('Addresses', fugue_icon='fugue-network-ip',
                          href=self.tab_href('addresses')),
             ])
-        if has_perm(Perm.edit_device_info_financial, venture):
-            tab_items.extend([
-                MenuItem('Prices', fugue_icon='fugue-money-coin',
-                         href=self.tab_href('prices')),
-            ])
-        if has_perm(Perm.read_device_info_financial, venture):
-            tab_items.extend([
-                MenuItem('Costs', fugue_icon='fugue-wallet',
-                         href=self.tab_href('costs')),
-            ])
         if has_perm(Perm.read_device_info_history, venture):
             tab_items.extend([
                 MenuItem('History', fugue_icon='fugue-hourglass',
@@ -239,13 +367,15 @@ class BaseMixin(ACLGateway):
         )):
             tab_items.extend([
                 MenuItem(
-                    'Asset',
+                    'Linked Asset',
+                    name='asset',
                     fugue_icon='fugue-baggage-cart-box',
                     href=self.tab_href('asset')),
             ])
-        if ('ralph.scan' in settings.INSTALLED_APPS and
-                has_perm(Perm.edit_device_info_generic) and
-                self.kwargs.get('device')):
+        if all((
+            has_perm(Perm.edit_device_info_generic),
+            self.kwargs.get('device') or self.kwargs.get('address'),
+        )):
             tab_items.extend([
                 MenuItem(
                     'Scan',
@@ -254,30 +384,10 @@ class BaseMixin(ACLGateway):
                     href=self.tab_href('scan'),
                 ),
             ])
-        if ('ralph.cmdb' in settings.INSTALLED_APPS and
-                has_perm(Perm.read_configuration_item_info_generic)):
-            ci = ''
-            device_id = self.kwargs.get('device')
-            if device_id:
-                deleted = False
-                if self.request.GET.get('deleted', '').lower() == 'on':
-                    deleted = True
-                try:
-                    if deleted:
-                        device = Device.admin_objects.get(pk=device_id)
-                    else:
-                        device = Device.objects.get(pk=device_id)
-                    ci = CI.get_by_content_object(device)
-                except Device.DoesNotExist:
-                    pass
-            if ci:
-                tab_items.extend([
-                    MenuItem(
-                        'CMDB', fugue_icon='fugue-thermometer',
-                        href='/cmdb/ci/view/%s' % ci.id
-                    ),
-                ])
-        if has_perm(Perm.read_device_info_reports, venture):
+        if all((
+            has_perm(Perm.edit_device_info_generic, venture),
+            not (self.kwargs.get('device') or self.kwargs.get('address')),
+        )):
             tab_items.extend([
                 MenuItem('Reports', fugue_icon='fugue-reports-stack',
                          href=self.tab_href('reports')),
@@ -294,119 +404,9 @@ class BaseMixin(ACLGateway):
         details = self.kwargs.get('details', 'info')
         profile = self.request.user.get_profile()
         has_perm = profile.has_perm
-        footer_items = []
-        mainmenu_items = []
-        if has_perm(Perm.has_core_access):
-            mainmenu_items.append(
-                MenuItem(
-                    'Ventures',
-                    fugue_icon='fugue-store',
-                    view_name='ventures'
-                )
-            )
-        if has_perm(Perm.read_dc_structure):
-            mainmenu_items.append(
-                MenuItem('Racks', fugue_icon='fugue-building',
-                         view_name='racks'))
-        if has_perm(Perm.read_network_structure):
-            mainmenu_items.append(
-                MenuItem('Networks', fugue_icon='fugue-weather-clouds',
-                         view_name='networks'))
-        if has_perm(Perm.read_device_info_reports):
-            mainmenu_items.append(
-                MenuItem('Reports', fugue_icon='fugue-report',
-                         view_name='reports'))
-        mainmenu_items.append(
-            MenuItem('Ralph CLI', fugue_icon='fugue-terminal',
-                     href='#beast'))
-        mainmenu_items.append(
-            MenuItem('Quick scan', fugue_icon='fugue-radar',
-                     href='#quickscan'))
-
-        pending_scans = get_pending_scans()
-        if pending_scans:
-            mainmenu_items.append(MenuItem(
-                _('Pending scans {}/{}').format(
-                    pending_scans.new_devices,
-                    pending_scans.changed_devices,
-                ),
-                href=reverse(
-                    'scan_list', kwargs={'scan_type': (
-                        'new' if pending_scans.new_devices else 'existing'
-                    )}
-                ),
-                fugue_icon='fugue-light-bulb--exclamation',
-            ))
-        if ('ralph.cmdb' in settings.INSTALLED_APPS and
-                has_perm(Perm.read_configuration_item_info_generic)):
-            mainmenu_items.append(
-                MenuItem('CMDB', fugue_icon='fugue-thermometer',
-                         href='/cmdb/changes/timeline')
-            )
-
-        for app in pluggableapp.app_dict.values():
-            if isinstance(app, RalphModule):
-                # check app required permissions
-                if (app.required_permission is None or
-                        has_perm(app.required_permission)):
-                    mainmenu_items.append(MenuItem(
-                        app.disp_name,
-                        fugue_icon=app.icon,
-                        href='/{}'.format(app.url_prefix)
-                    ))
-
-        if settings.BUGTRACKER_URL:
-            footer_items.append(
-                MenuItem(
-                    'Report a bug', fugue_icon='fugue-bug', pull_right=True,
-                    href=settings.BUGTRACKER_URL)
-            )
-        footer_items.append(
-            MenuItem(
-                "Version %s" % '.'.join((str(part) for part in VERSION)),
-                fugue_icon='fugue-document-number',
-                href=CHANGELOG_URL,
-            )
-        )
-        if self.request.user.is_staff:
-            footer_items.append(
-                MenuItem('Admin', fugue_icon='fugue-toolbox', href='/admin'))
-        footer_items.append(
-            MenuItem(
-                '%s (preference)' % self.request.user,
-                fugue_icon='fugue-user',
-                view_name='preference',
-                view_args=[details or 'info', ''],
-                pull_right=True,
-                href=reverse('user_preference', args=[]),
-            )
-        )
-        footer_items.append(
-            MenuItem(
-                'logout',
-                fugue_icon='fugue-door-open-out',
-                view_name='logout',
-                view_args=[details or 'info', ''],
-                pull_right=True,
-                href=settings.LOGOUT_URL,
-            )
-        )
-        mainmenu_items.append(
-            MenuItem(
-                'Advanced search',
-                name='search',
-                fugue_icon='fugue-magnifier',
-                view_args=[details or 'info', ''],
-                view_name='search',
-                pull_right=True,
-            )
-        )
         tab_items = self.get_tab_items()
         ret.update({
-            'section': self.section,
             'details': details,
-            'mainmenu_items': mainmenu_items,
-            'footer_items': footer_items,
             'url_query': self.request.GET,
             'search_url': reverse('search', args=[details, '']),
             'user': self.request.user,
@@ -578,10 +578,33 @@ class Info(DeviceUpdateView):
     def get_context_data(self, **kwargs):
         ret = super(Info, self).get_context_data(**kwargs)
         if self.object:
+            if 'ralph_assets' in settings.INSTALLED_APPS:
+                from ralph_assets.models_assets import DeviceInfo
+                assets_imported = True
+            else:
+                assets_imported = False
             tags = self.object.get_tags(
                 official=False,
                 author=self.request.user,
             )
+            if self.object.dirty_fields:
+                deploy_disable_reason = _(
+                    "This device contains dirty fields."
+                )
+            elif not (
+                not assets_imported or
+                DeviceInfo.objects.filter(ralph_device_id=self.object.pk) or
+                self.object.model.type == DeviceType.virtual_server
+            ):
+                deploy_disable_reason = _(
+                    "This device is not linked to an asset."
+                )
+            elif not self.object.verified:
+                deploy_disable_reason = _(
+                    "This device is not verified."
+                )
+            else:
+                deploy_disable_reason = None
         else:
             tags = []
         tags = ['"%s"' % t.name if ',' in t.name else t.name for t in tags]
@@ -614,7 +637,8 @@ class Info(DeviceUpdateView):
             'deployment_status': deployment_status,
             'plugins': plugins,
             'changed_addresses': self.get_changed_addresses(),
-            'network_connections': network_connections
+            'network_connections': network_connections,
+            'deploy_disable_reason': deploy_disable_reason,
         })
         return ret
 
@@ -691,28 +715,7 @@ class Components(DeviceDetailView):
 
     def get_context_data(self, **kwargs):
         ret = super(Components, self).get_context_data(**kwargs)
-        ret.update({'components': None})  # a leftover from ralph.util.pricing
-        return ret
-
-
-class Prices(DeviceUpdateView):
-    form_class = DevicePricesForm
-    template_name = 'ui/device_prices.html'
-    read_perm = Perm.edit_device_info_financial  # sic
-    edit_perm = Perm.edit_device_info_financial
-
-    def get_initial(self):
-        # a leftover from ralph.util.pricing
-        return {'auto_price': 0}
-
-    def get_context_data(self, **kwargs):
-        ret = super(Prices, self).get_context_data(**kwargs)
-        ret.update({
-            'components': _get_details(self.object,
-                                       purchase_only=False,
-                                       with_price=True),
-            'deprecated': self.object.is_deprecated(),
-        })
+        ret.update({'components': _get_details(self.object)})
         return ret
 
 
@@ -1015,53 +1018,6 @@ class Addresses(DeviceDetailView):
         return ret
 
 
-class Costs(DeviceDetailView):
-    template_name = 'ui/device_costs.html'
-    read_perm = Perm.list_devices_financial
-
-    def get_context_data(self, **kwargs):
-        query_variable_name = 'cost_page'
-        ret = super(Costs, self).get_context_data(**kwargs)
-        history = self.object.historycost_set.order_by('-end', '-start').all()
-        has_perm = self.request.user.get_profile().has_perm
-        for h in history:
-            if not has_perm(Perm.list_devices_financial, h.venture):
-                h.daily_cost = None
-            if h.end < FOREVER_DATE and h.start:
-                h.span = (h.end - h.start).days
-            elif h.start:
-                h.span = (datetime.date.today() - h.start).days
-        try:
-            page = max(1, int(self.request.GET.get(query_variable_name, 1)))
-        except ValueError:
-            page = 1
-        history_page = Paginator(history, HISTORY_PAGE_SIZE).page(page)
-        ret.update({
-            'history': history,
-            'history_page': history_page,
-            'query_variable_name': query_variable_name,
-            'ALWAYS_DATE': ALWAYS_DATE,
-            'FOREVER_DATE': FOREVER_DATE,
-            'deprecated': self.object.is_deprecated(),
-        })
-        last_month = datetime.date.today() - datetime.timedelta(days=31)
-        splunk = self.object.splunkusage_set.filter(
-            day__gte=last_month
-        ).order_by('-day')
-        if splunk.count():
-            size = splunk.aggregate(db.Sum('size'))['size__sum'] or 0
-            cost = (
-                splunk[0].get_price(size=size) /
-                splunk[0].model.group.size_modifier
-            )
-            ret.update({
-                'splunk_size': size,
-                'splunk_monthly_cost': cost,
-                'splunk_daily_cost': cost / splunk.count(),
-            })
-        return ret
-
-
 class History(DeviceDetailView):
     template_name = 'ui/device_history.html'
     read_perm = Perm.read_device_info_history
@@ -1088,30 +1044,6 @@ class History(DeviceDetailView):
             'show_all': show_all,
             'query_variable_name': query_variable_name,
         })
-        return ret
-
-
-class Purchase(DeviceUpdateView):
-    form_class = DevicePurchaseForm
-    template_name = 'ui/device_purchase.html'
-    read_perm = Perm.read_device_info_support
-    edit_perm = Perm.edit_device_info_support
-
-    def get_initial(self):
-        return {
-            'model_name': self.object.get_model_name()
-        }
-
-    def get_context_data(self, **kwargs):
-        ret = super(Purchase, self).get_context_data(**kwargs)
-        ret.update(
-            {
-                'components': _get_details(
-                    self.object,
-                    purchase_only=False, with_price=True,
-                ),
-            }
-        )
         return ret
 
 
@@ -1144,12 +1076,17 @@ class Asset(BaseMixin, TemplateView):
             )
             from ralph_assets.api_ralph import get_asset
             self.asset = get_asset(self.object.id)
-            self.form = ChooseAssetForm(
-                initial={
-                    'asset': self.asset['asset_id'] if self.asset else None,
-                },
-                device_id=self.object.id,
-            )
+            if not self.asset:
+                msg = ("This device is not linked to an asset. "
+                       "Please correct this using the input box below.")
+                messages.warning(self.request, msg)
+            if not self.form:
+                self.form = ChooseAssetForm(
+                    initial={
+                        'asset': self.asset['asset_id'] if self.asset else None,
+                    },
+                    device_id=self.object.id,
+                )
         return super(Asset, self).get(*args, **kwargs)
 
     def post(self, *args, **kwargs):
@@ -1169,7 +1106,7 @@ class Asset(BaseMixin, TemplateView):
             if assign_asset(self.object.id, asset.id):
                 messages.success(
                     self.request,
-                    "Asset assigned successfully.",
+                    "Asset linked successfully.",
                 )
                 return HttpResponseRedirect(self.request.get_full_path())
             else:
@@ -1177,11 +1114,12 @@ class Asset(BaseMixin, TemplateView):
                     self.request,
                     "An error occurred. Please try again.",
                 )
-        return super(Asset, self).get(*args, **kwargs)
+        return self.get(*args, **kwargs)
 
 
 class ServerMove(BaseMixin, TemplateView):
     template_name = 'ui/bulk-move.html'
+    submodule_name = 'racks'
 
     def __init__(self, *args, **kwargs):
         super(ServerMove, self).__init__(*args, **kwargs)
@@ -1478,12 +1416,15 @@ class BulkEdit(BaseMixin, TemplateView):
     def get(self, *args, **kwargs):
         return HttpResponseRedirect(self.request.path + '../info/')
 
+    @property
+    def active_submodule(self):
+        return self.kwargs.get('section')
+
     def get_context_data(self, **kwargs):
         ret = super(BulkEdit, self).get_context_data(**kwargs)
         ret.update({
             'form': self.form,
             'details': 'bulkedit',
-            'section': self.kwargs.get('section'),
             'subsection': 'bulk edit',
             'devices': self.devices,
             'edit_fields': self.edit_fields,
@@ -1498,9 +1439,7 @@ class Software(DeviceDetailView):
 
     def get_context_data(self, **kwargs):
         ret = super(Software, self).get_context_data(**kwargs)
-        ret.update({
-            'components': _get_details(self.object, purchase_only=False),
-        })
+        ret.update({'components': _get_details(self.object)})
         return ret
 
 
@@ -1519,12 +1458,22 @@ class VhostRedirectView(RedirectView):
 
 class Scan(BaseMixin, TemplateView):
     template_name = 'ui/scan.html'
+    submodule_name = 'search'
 
     def get(self, *args, **kwargs):
         try:
-            device_id = int(self.kwargs.get('address'))
-        except ValueError:
+            device_id = int(self.kwargs.get('device'))
+        except (TypeError, ValueError):
             self.object = None
+            try:
+                address = IPAddress.objects.get(
+                    address=self.kwargs.get('address')
+                )
+            except IPAddress.DoesNotExist:
+                pass
+            else:
+                if address.device:
+                    self.object = address.device
         else:
             self.object = Device.objects.get(id=device_id)
         return super(Scan, self).get(*args, **kwargs)
@@ -1555,8 +1504,7 @@ class Scan(BaseMixin, TemplateView):
     def get_context_data(self, **kwargs):
         ret = super(Scan, self).get_context_data(**kwargs)
         address = self.kwargs.get('address') or self.request.GET.get('address')
-
-        if address and not self.object:
+        if address:
             try:
                 ipaddress = IPAddress.objects.get(address=address)
             except IPAddress.DoesNotExist:
@@ -1585,55 +1533,87 @@ class Scan(BaseMixin, TemplateView):
 class ScanList(BaseMixin, DataTableMixin, TemplateView):
     template_name = 'ui/scan-list.html'
     sort_variable_name = 'sort'
-    columns = [
-        DataTableColumn(
-            _('IP'),
-            field='ipaddress',
-            sort_expression='ipaddress',
-            bob_tag=True,
-        ),
-        DataTableColumn(
-            _('Scan time'),
-            field='created',
-            sort_expression='created',
-            bob_tag=True,
-        ),
-        DataTableColumn(
-            _('Device'),
-            bob_tag=True,
-        ),
-    ]
+    submodule_name = 'scan_list'
+
+    def __init__(self, *args, **kwargs):
+        super(ScanList, self).__init__(*args, **kwargs)
+        show_device = (self.column_visible, 'existing')
+        show_venture = (self.column_visible, 'existing')
+        self.columns = [
+            DataTableColumn(
+                _('IP'),
+                field='ipaddress',
+                sort_expression='ipaddress',
+                bob_tag=True,
+            ),
+            DataTableColumn(
+                _('Venture'),
+                bob_tag=True,
+                show_conditions=show_venture,
+            ),
+            DataTableColumn(
+                _('Last scan time'),
+                field='modified',
+                sort_expression='modified',
+                bob_tag=True,
+            ),
+            DataTableColumn(
+                _('Device'),
+                bob_tag=True,
+                show_conditions=show_device,
+            ),
+        ]
+
+    def column_visible(self, change_type):
+        return self.change_type == change_type
+
+    def get_tab_items(self):
+        return []
 
     def get_context_data(self, **kwargs):
         result = super(ScanList, self).get_context_data(**kwargs)
         result.update(
             super(ScanList, self).get_context_data_paginator(**kwargs)
         )
+        changes = get_pending_changes()
         result.update({
+            'changed_count': changes.changed_devices if changes else 0,
+            'columns': self.columns,
+            'new_count': changes.new_devices if changes else 0,
+            'change_type': kwargs['change_type'],
+            'sort': self.sort,
             'sort_variable_name': self.sort_variable_name,
             'url_query': self.request.GET,
-            'sort': self.sort,
-            'columns': self.columns,
-            'scan_type': kwargs['scan_type']
+            'venture_service_filter_form': self.form,
         })
         return result
 
     def get(self, *args, **kwargs):
-        scans = self.handle_search_data(*args, **kwargs)
-        self.data_table_query(scans)
+        self.form = VentureServiceFilterForm(self.request.GET)
+        changes = self.handle_search_data(*args, **kwargs)
+        self.data_table_query(changes)
+        self.change_type = kwargs['change_type']
         return super(ScanList, self).get(*args, **kwargs)
 
     def handle_search_data(self, *args, **kwargs):
-        delta = timezone.now() - datetime.timedelta(days=1)
-        all_scans = ScanSummary.objects.filter(modified__gt=delta)
-        if kwargs['scan_type'] == 'new':
-            return all_scans.filter(ipaddress__device=None)
+        delta = timezone.now() - datetime.timedelta(seconds=SCAN_RESULT_TTL)
+        venture_name = self.request.GET.get('venture')
+        service_name = self.request.GET.get('service')
+        all_changes = ScanSummary.objects.filter(modified__gt=delta)
+        if venture_name or service_name:
+            all_changes = all_changes.filter(
+                db.Q(ipaddress__device__venture__name=venture_name) |
+                db.Q(ipaddress__device__service__name=service_name)
+            )
+        if kwargs['change_type'] == 'new':
+            return all_changes.filter(ipaddress__device=None)
         else:
-            return all_scans.exclude(ipaddress__device=None)
+            return all_changes.exclude(ipaddress__device=None)
 
 
 class ScanStatus(BaseMixin, TemplateView):
     template_name = 'ui/scan-status.html'
+    submodule_name = 'search'
 
     def __init__(self, *args, **kwargs):
         super(ScanStatus, self).__init__(*args, **kwargs)
@@ -1702,6 +1682,8 @@ class ScanStatus(BaseMixin, TemplateView):
         data['type'] = data.get('type', {})
         data['mac_addresses'] = data.get('mac_addresses', {})
         data['serial_number'] = data.get('serial_number', {})
+        if 'ralph_assets' in settings.INSTALLED_APPS:
+            data['asset'] = {}
         if post and device_id == 'new':
             form = DiffForm(data, post, default='custom')
         else:
@@ -1845,6 +1827,21 @@ class ScanStatus(BaseMixin, TemplateView):
                                 priority=SAVE_PRIORITY,
                                 user=self.request.user,
                             )
+                        if (
+                            'asset' in form.cleaned_data and
+                            form.cleaned_data['asset'] != 'database'
+                        ):
+                            from ralph_assets.api_ralph import assign_asset
+                            asset = form.cleaned_data['asset-custom']
+                            if not asset:
+                                msg = ("Cannot save this type of device "
+                                       "without specifying an asset.")
+                                raise ValueError(msg)
+                            elif not assign_asset(device.id, asset.id):
+                                msg = ("Asset id={} cannot be assigned to "
+                                       "device id={}."
+                                       .format(asset.id, device.id))
+                                messages.error(self.request, msg)
                     except ValueError as e:
                         messages.error(self.request, e)
                     else:
@@ -1854,10 +1851,7 @@ class ScanStatus(BaseMixin, TemplateView):
                             "Device %s saved." % device,
                         )
                         for warning in warnings:
-                            messages.warning(
-                                self.request,
-                                warning
-                            )
+                            messages.warning(self.request, warning)
                         return HttpResponseRedirect(self.request.path)
                 else:
                     messages.error(self.request, "Errors in the form.")
