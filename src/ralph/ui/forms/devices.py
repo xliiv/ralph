@@ -7,7 +7,7 @@ from __future__ import unicode_literals
 
 from ajax_select.fields import (
     AutoCompleteSelectField,
-    AutoCompleteCascadeSelectField,
+    CascadeModelChoiceField,
 )
 from django import forms
 from django.conf import settings
@@ -20,6 +20,7 @@ from ralph.discovery.models_component import is_mac_valid
 from ralph.discovery.models import (
     ASSET_NOT_REQUIRED,
     Device,
+    DeviceEnvironment,
     DeviceType,
 )
 from ralph.util import Eth
@@ -48,15 +49,11 @@ class ServiceCatalogMixin(forms.ModelForm):
         # setting widget's id here is necessary for dependent field to work
         attrs={'id': 'service_catalog_ajax_field'},
     )
-    device_environment = AutoCompleteCascadeSelectField(
+    device_environment = CascadeModelChoiceField(
         ('ralph.ui.channels', 'DeviceEnvironmentLookup'),
-        required=True,
         label=_('Device environment'),
+        queryset=DeviceEnvironment.objects.all(),
         parent_field=service,
-        # on some views where this mixin is used there's already a field
-        # named 'id_device_environment', so it's better to explicitly specify
-        # the name for this one here
-        attrs={'id': 'device_environment_ajax_field'},
     )
 
 
@@ -125,19 +122,11 @@ class DeviceForm(ServiceCatalogMixin):
                     (p.id, p.name) for p in
                     self.get_possible_parents(self.instance)
                 ]
-                if (
-                    asset and
-                    asset.model.category and
-                    not asset.model.category.is_blade
-                ):
+                if asset:
                     self.fields['parent'].widget = ReadOnlySelectWidget(
                         choices=self.fields['parent'].choices,
                     )
-            if (
-                asset and
-                asset.model.category and
-                not asset.model.category.is_blade
-            ):
+            if asset:
                 if 'chassis_position' in self.fields:
                     self.fields[
                         'chassis_position'
@@ -264,8 +253,8 @@ class DeviceCreateForm(DeviceForm):
             'service',
             'device_environment',
             'barcode',
-            'position',
             'chassis_position',
+            'position',
             'remarks',
             'margin_kind',
             'deprecation_kind',
@@ -296,14 +285,9 @@ class DeviceCreateForm(DeviceForm):
         )
         del self.fields['save_comment']
         if 'data' in kwargs and kwargs['data'].get('asset'):
-            try:
-                asset = Asset.objects.get(pk=kwargs['data']['asset'])
-            except Asset.DoesNotExist:
-                pass
-            else:
-                if not asset.model.category.is_blade:
-                    self.fields['chassis_position'].widget = ReadOnlyWidget()
-                    self.fields['position'].widget = ReadOnlyWidget()
+            if Asset.objects.filter(pk=kwargs['data']['asset']).exists():
+                self.fields['chassis_position'].widget = ReadOnlyWidget()
+                self.fields['position'].widget = ReadOnlyWidget()
 
     def clean_macs(self):
         sn = self.cleaned_data['sn']
@@ -351,7 +335,7 @@ class DeviceCreateForm(DeviceForm):
     def clean(self):
         cleaned_data = super(DeviceCreateForm, self).clean()
         asset = cleaned_data.get('asset')
-        if asset and not asset.model.category.is_blade:
+        if asset:
             # get position from asset
             if all((
                 'chassis_position' in cleaned_data,
@@ -406,8 +390,8 @@ class DeviceInfoForm(DeviceForm):
             'barcode',
             'dc',
             'rack',
-            'position',
             'chassis_position',
+            'position',
             'parent',
             'remarks',
             'deleted',
