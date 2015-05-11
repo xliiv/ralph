@@ -16,9 +16,11 @@ from ralph.cmdb.tests.utils import (
     DeviceEnvironmentFactory,
     ServiceCatalogFactory,
 )
+from ralph.discovery.models_device import DeviceType
 from ralph.discovery.tests.util import (
     ComponentFactory,
     ComponentModelFactory,
+    DeviceModelFactory,
     DeviceFactory,
     IPAddressFactory,
     MemoryFactory,
