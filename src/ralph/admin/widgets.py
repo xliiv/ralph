@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
 import os
-from collections import defaultdict
 from itertools import chain, groupby
 from urllib import parse
 
 from django import forms
 from django.contrib.admin.templatetags.admin_static import static
 from django.contrib.admin.views.main import TO_FIELD_VAR
-from django.core.exceptions import FieldDoesNotExist
 from django.core.urlresolvers import reverse
-from django.db.models.loading import get_model
 from django.forms.utils import flatatt
 from django.template import loader
 from django.template.context import RenderContext
@@ -17,9 +14,6 @@ from django.template.defaultfilters import slugify, title
 from django.utils.encoding import force_text
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext as _
-
-from ralph.admin.autocomplete import DETAIL_PARAM, QUERY_PARAM
-from ralph.admin.helpers import get_field_by_relation_path
 
 ReadOnlyWidget = forms.TextInput(attrs={'readonly': 'readonly'})
 
@@ -162,9 +156,7 @@ class AutocompleteWidget(forms.TextInput):
 
     def value_from_datadict(self, data, files, name):
         value = data.get(name)
-        #if name == 'business_owners':
-        #    import ipdb; ipdb.set_trace()
-        if getattr(self, 'multi', False) == True:
+        if getattr(self, 'multi', False) is True:
             print('name', name)
             if value:
                 value = value.split(',')
@@ -173,25 +165,9 @@ class AutocompleteWidget(forms.TextInput):
         return value
 
     def render(self, name, value, attrs=None):
-        admin_model = self.admin_site._registry[self.rel_to]
         model_options = (
             self.rel_to._meta.app_label, self.rel_to._meta.model_name
         )
-        #xwidget_options = {
-        #x    'data-suggest-url': reverse(
-        #x        'autocomplete-list', kwargs={
-        #x            'app': self.field.rel.related_model._meta.app_label,
-        #x            'model': self.field.rel.related_model._meta.model_name,
-        #x            'field': self.field.name
-        #x        }
-        #x    ),
-        #x    'data-details-url': reverse(
-        #x        'admin:{}_{}_autocomplete_details'.format(*model_options)
-        #x    ),
-        #x    #x'data-query-var': QUERY_PARAM,
-        #x    #x'data-detail-var': DETAIL_PARAM,
-        #x}
-
         if attrs is None:
             attrs = {}
         attrs['name'] = name
@@ -201,11 +177,9 @@ class AutocompleteWidget(forms.TextInput):
         else:
             value = value or ""
 
-
-
-        #xattrs.update({'type': 'hidden'})
-        #xwidget_options['data-target-selector'] = '#' + attrs.get('id')
-        #xinput_field = super().render(name, value, attrs)
+        searched_fields = self.admin_site._registry[self.rel_to].search_fields
+        searched_fields_text = ', '.join(sorted(searched_fields))
+        searched_fields_info = "Search by: {}".format(searched_fields_text)
 
         if self.rel_to in self.admin_site._registry:
             related_url = reverse(
@@ -215,63 +189,7 @@ class AutocompleteWidget(forms.TextInput):
                 ),
                 current_app=self.admin_site.name,
             ) + self.get_url_parameters()
-            #xsearched_fields = []
-            #xsearched_fields_tooltip = defaultdict(list)
-            #xpolymorphic_descendants = getattr(
-            #x    self.rel_to, '_polymorphic_descendants', []
-            #x)
 
-            #xif polymorphic_descendants:
-            #x    # Check if model after which we are looking for is polymorphic
-            #x    # if they are also looking for the models of its dependencies
-            #x    # or by limit_models defined in model
-            #x    polymorphic_models = polymorphic_descendants
-            #x    limit_models = getattr(self.field, 'limit_models', [])
-            #x    if limit_models:
-            #x        polymorphic_models = [
-            #x            get_model(*i.split('.')) for i in limit_models
-            #x        ]
-
-            #x    for related_model in polymorphic_models:
-            #x        for field_name in self.admin_site._registry[
-            #x            related_model
-            #x        ].search_fields:
-            #x            field = get_field_by_relation_path(
-            #x                related_model, field_name
-            #x            )
-            #x            key = str(related_model._meta.verbose_name)
-            #x            searched_fields_tooltip[key].append(
-            #x                str(field.verbose_name)
-            #x            )
-            #xelse:
-            #x    for field_name in admin_model.search_fields:
-            #x        try:
-            #x            field = get_field_by_relation_path(
-            #x                self.rel_to, field_name
-            #x            )
-            #x            key = str(self.rel_to._meta.verbose_name)
-            #x            searched_fields_tooltip[key].append(
-            #x                str(field.verbose_name)
-            #x            )
-            #x            searched_fields.append(str(field.verbose_name))
-            #x        except FieldDoesNotExist:
-            #x            pass
-        current_object = None
-        #TOOD:: uncomment it ?
-        #if value:
-        #    import ipdb; ipdb.set_trace()
-        #    # TODO:: is it necessery
-        #    current_object = self.rel_to._default_manager.select_related(
-        #        # https://docs.djangoproject.com/en/1.8/ref/models/querysets/#select-related
-        #        # we cannot pass empty list - this would select all related
-        #        # model - instead we pass None, which means that none of
-        #        # related models will be selected
-        #        *(admin_model.list_select_related or [None])
-        #    ).filter(
-        #        pk__in=value
-        #    ).first()
-
-        show_tooltip = hasattr(self.rel_to, 'autocomplete_tooltip')
         context = RenderContext({
             'data_suggest_url': reverse(
                 'autocomplete-list', kwargs={
@@ -283,46 +201,19 @@ class AutocompleteWidget(forms.TextInput):
             'data_details_url': reverse(
                 'admin:{}_{}_autocomplete_details'.format(*model_options)
             ),
-            #x'model': self.rel_to,
-            #x'current_object': current_object,
             'name': name or "",
             'value': value,
             'attrs': flatatt(attrs),
             'related_url': related_url,
-            #x'input_field': input_field,
-            #x'searched_fields': sorted(
-            #x    set(list(chain(*searched_fields_tooltip.values())))
-            #x),
-            #x'searched_fields_tooltip': dict(searched_fields_tooltip),
-            'show_tooltip': show_tooltip,
+            'searched_fields_info': searched_fields_info,
         })
+
         info = (self.rel_to._meta.app_label, self.rel_to._meta.model_name)
-        can_edit = self.admin_site._registry[self.rel_to].has_change_permission(
-            self.request
-        )
         is_polymorphic = getattr(self.rel_to, 'is_polymorphic', False)
-        if is_polymorphic and current_object:
-            info = (
-                current_object._meta.app_label,
-                current_object._meta.model_name
-            )
-        #xif value and can_edit:
-        #x    context['change_related_template_url'] = self.get_related_url(
-        #x        info, 'change', value,
-        #x    )
         can_add = self.admin_site._registry[self.rel_to].has_add_permission(
             self.request
         )
         if not is_polymorphic and can_add:
             context['add_related_url'] = self.get_related_url(info, 'add')
-        if show_tooltip and current_object:
-            context['tooltip'] = current_object.autocomplete_tooltip
         template = loader.get_template('admin/widgets/autocomplete.html')
-
-        from pprint import pprint
-        #pprint(context)
-        xxx = template.render(context)
-        #if name == 'rack':
-        #    import ipdb; ipdb.set_trace()
-        #pprint(xxx)
-        return xxx
+        return template.render(context)
