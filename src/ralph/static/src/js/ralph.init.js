@@ -22,21 +22,6 @@ function dismissRelatedLookupPopup(win, chosenId) {
 }
 
 function dismissChangeRelatedObjectPopup(win, objId, newRepr, newId) {
-    //TODO:: handle that
-/*
-    objId = html_unescape(objId);
-    xnewRepr = html_unescape(newRepr);
-    var id = windowname_to_id(win.name).replace(/^edit_/, '');
-    var selectsSelector = interpolate('#%s, #%s_from, #%s_to', [id, id, id]);
-    var selects = django.jQuery(selectsSelector);
-    selects.find('option').each(function() {
-        if (this.value === objId) {
-            this.innerHTML = xnewRepr;
-            this.value = newId;
-        }
-    });
-    debugger;
-*/
     elem = getCallerNode(win);
     elem.reloadBadges();
     win.close();
@@ -53,7 +38,6 @@ function dismissAddRelatedObjectPopup(win, newId, newRepr) {
     if (elem.nodeName.toUpperCase() === 'AUTO-COMPLETE') {
         elem.updateById(newId);
     } else if (elem) {
-        console.log('non-proto')
         var elemName = elem.nodeName.toUpperCase();
         if (elemName == 'SELECT') {
             o = new Option(newRepr, newId);
