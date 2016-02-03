@@ -40,16 +40,13 @@ class ServiceEnvironmentInline(RalphTabularInline):
 
 @register(Service)
 class ServiceAdmin(RalphAdmin):
-    #exclude = ['environments']
-    fields = ['business_owners']
-    #inlines = [ServiceEnvironmentInline]
+    exclude = ['environments']
+    inlines = [ServiceEnvironmentInline]
     filter_horizontal = ['business_owners', 'technical_owners']
     search_fields = ['name', 'uid']
-    #raw_id_fields = ['profit_center', 'support_team', 'business_owners']
-    raw_id_fields = ['business_owners']
+    raw_id_fields = ['profit_center', 'support_team']
 
     def formfield_for_manytomany(self, db_field, request=None, **kwargs):
-        # TODO:: make it DRY with admin/mixins.py:58
         if db_field.name in self.raw_id_fields:
             kw = {'multi': True}
             if db_field.name in self.raw_id_override_parent:

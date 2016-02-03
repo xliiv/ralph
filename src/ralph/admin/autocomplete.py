@@ -73,7 +73,6 @@ class SuggestView(JsonViewMixin, View):
                 'tooltip': getattr(obj, 'autocomplete_tooltip', None)
             } for obj in self.get_queryset(request.user)
         ]
-        print(results)
         return self.render_to_json_response({'results': results})
 
 

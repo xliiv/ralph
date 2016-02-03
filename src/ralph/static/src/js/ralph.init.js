@@ -1,14 +1,13 @@
 var ralph = ralph || {};
 ralph.jQuery = jQuery.noConflict();
 
-//TODO:: many adds: rack+server-room+data-center
-//TODO:: check if auto-complete could adopt original django flow of `change`, `add`, `search`
 function getCallerNode(win) {
     console.log('getCallerNode', win);
     var name = windowname_to_id(win.name);
     var elem = document.querySelector('#' + name);
     return elem;
 }
+
 function dismissRelatedLookupPopup(win, chosenId) {
     var name = windowname_to_id(win.name);
     var elem = document.getElementById(name);
@@ -22,8 +21,8 @@ function dismissRelatedLookupPopup(win, chosenId) {
     win.close();
 }
 
-
 function dismissChangeRelatedObjectPopup(win, objId, newRepr, newId) {
+    //TODO:: handle that
 /*
     objId = html_unescape(objId);
     xnewRepr = html_unescape(newRepr);
@@ -52,9 +51,6 @@ function dismissAddRelatedObjectPopup(win, newId, newRepr) {
     var elem = document.getElementById(name);
     var o;
     if (elem.nodeName.toUpperCase() === 'AUTO-COMPLETE') {
-        //TODO:: change proto to something better
-        console.log('proto')
-        //elem = getCallerNode(win);
         elem.updateById(newId);
     } else if (elem) {
         console.log('non-proto')
@@ -82,6 +78,7 @@ function dismissAddRelatedObjectPopup(win, newId, newRepr) {
 }
 
 function hideSuggestions(evt, obj) {
+    //TODO: this could be replaced by on-blur on auto-complete
     var elems = document.querySelectorAll('auto-complete');
     if (!evt.target.classList.contains("auto-complete")) {
         // clicked outside auto-complete -> hide suggestions

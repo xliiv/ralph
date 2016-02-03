@@ -154,7 +154,7 @@ Example:
       handleTyping: function(evt, obj) {
         console.log('handleTyping', evt, obj);
         if (evt.target.value === '' || evt.target.value.length < this.fireThreshold) return false;
-        // TODO:: find out why regular syntax doesn't work
+        // TODO: find out why regular syntax doesn't work
         this.$['by-query-ajax'].params = {
           "q": evt.target.value
         };
@@ -253,7 +253,6 @@ Example:
         console.log('updateBadges', evt, obj);
         this.hiddenSpinner = true;
         var ids = this._getIds();
-        console.log('ids', ids);
         var badgesData = []
         for (var idx = 0; idx < obj.xhr.response['results'].length; idx++) {
           badgesData.push(null);
@@ -305,11 +304,7 @@ Example:
       },
       behaviors: [
         Polymer.IronFormElementBehavior
-      ],
-      ready: function() {
-        //console.log('error', this.hiddenAjaxError);
-        //console.log('spinner', this.hiddenSpinner);
-      }
+      ]
     });
   </script>
 </dom-module>
