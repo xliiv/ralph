@@ -164,16 +164,16 @@ Example:
         this.hiddenSpinner = false;
       },
       _handleKeys: function(evt, obj) {
-        console.log('_handleKeys', evt, obj, obj.keyboardEvent.code);
-        if (obj.keyboardEvent.code === 'Escape') {
+        console.log('_handleKeys', evt, obj, obj.keyboardEvent.keyCode);
+        if (obj.keyboardEvent.keyCode === 27) {  // 'Escape'
           if (this.hideMenu === false) {
             this.hideMenu = true;
           }
-        } else if (obj.keyboardEvent.code === 'ArrowDown') {
+        } else if (obj.keyboardEvent.keyCode === 40) {  // 'ArrowDown'
           this.$.suggestList._focusNext();
-        } else if (obj.keyboardEvent.code === 'ArrowUp') {
+        } else if (obj.keyboardEvent.keyCode === 38) {  // 'ArrowUp'
           this.$.suggestList._focusPrevious();
-        } else if (obj.keyboardEvent.code === 'Backspace') {
+        } else if (obj.keyboardEvent.keyCode === 8) {  // 'Backspace'
           console.log('backspace');
         }
       },
