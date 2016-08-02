@@ -112,7 +112,8 @@ class DNSaaS:
                 record['type'] == str(RecordType.a.id)
                 else settings.DNSAAS_AUTO_PTR_NEVER
             ),
-            'owner': settings.DNSAAS_OWNER
+            'owner': record['owner'],
+            'target_owner': settings.DNSAAS_OWNER,
         }
         request = self.session.patch(url, data=data)
         if request.status_code == 500:
@@ -187,7 +188,8 @@ class DNSaaS:
                 else settings.DNSAAS_AUTO_PTR_NEVER
             ),
             'domain': domain,
-            'owner': settings.DNSAAS_OWNER
+            'owner': record['owner'],
+            'target_owner': settings.DNSAAS_OWNER
         }
         request = self.session.post(url, data=data)
         return self._request2result(request)

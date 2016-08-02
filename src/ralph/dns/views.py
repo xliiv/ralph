@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import copy
 import logging
 
 from django.conf import settings
@@ -98,17 +99,17 @@ class DNSView(RalphDetailView):
                         request, _('DNS record has been deleted.')
                     )
             elif posted_form.cleaned_data.get('pk'):
-                errors = self.dnsaas.update_dns_record(
-                    posted_form.cleaned_data
-                )
+                data = copy.copy(posted_form.cleaned_data)
+                data['owner'] = request.user.username
+                errors = self.dnsaas.update_dns_record(data)
                 if not errors:
                     messages.success(
                         request, _('DNS record has been updated.')
                     )
             else:
-                errors = self.dnsaas.create_dns_record(
-                    posted_form.cleaned_data
-                )
+                data = copy.copy(posted_form.cleaned_data)
+                data['owner'] = request.user.username
+                errors = self.dnsaas.create_dns_record(data)
                 if not errors:
                     messages.success(
                         request, _('DNS record has been created.')
