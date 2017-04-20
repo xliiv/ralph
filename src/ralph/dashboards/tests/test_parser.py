@@ -8,8 +8,6 @@ from django.test import SimpleTestCase
 
 from ralph.dashboards.filter_parser import FilterParser
 from ralph.dashboards.models import Graph
-from ralph.dashboards.tests.factories import GraphFactory
-from ralph.data_center.tests.factories import DataCenterAssetFullFactory
 from ralph.tests.models import Bar
 
 ARGS, KWARGS = (0, 1)
@@ -82,6 +80,8 @@ class GraphModelTest(SimpleTestCase):
         return data
 
     def test_key_limit_limits_records_when_present(self):
+        from ralph.dashboards.tests.factories import GraphFactory
+        from ralph.data_center.tests.factories import DataCenterAssetFullFactory
         limit = 5
         self.data_center_assets = DataCenterAssetFullFactory.create_batch(
             2 * limit
@@ -93,6 +93,8 @@ class GraphModelTest(SimpleTestCase):
         self.assertEqual(qs.count(), limit)
 
     def test_key_sort_sorts_records_ascending_when_present(self):
+        from ralph.dashboards.tests.factories import GraphFactory
+        from ralph.data_center.tests.factories import DataCenterAssetFullFactory
         self.data_center_assets = DataCenterAssetFullFactory.create_batch(10)
         graph = GraphFactory(
             params=self._get_graph_params({'sort': 'barcode'})
@@ -103,6 +105,8 @@ class GraphModelTest(SimpleTestCase):
         self.assertTrue(qs.first()['barcode'] < qs.last()['barcode'])
 
     def test_key_sort_sorts_records_descending_when_minus_present(self):
+        from ralph.dashboards.tests.factories import GraphFactory
+        from ralph.data_center.tests.factories import DataCenterAssetFullFactory
         self.data_center_assets = DataCenterAssetFullFactory.create_batch(10)
         graph = GraphFactory(
             params=self._get_graph_params({'sort': '-barcode'})
