@@ -97,6 +97,7 @@ class GroupingLabel:
     def apply_grouping(self, queryset):
         if self.has_group:
             queryset = queryset.extra({
+                # eg. 'year': 'group_year'
                 self.label: getattr(self, 'group_' + self.label)()
             })
         return queryset
@@ -180,29 +181,38 @@ class Graph(AdminAbsoluteUrlMixin, NamedMixin, TimeStampMixin, models.Model):
             aggregate_fn_kwargs['distinct'] = True
         return aggregate_func(series_field, **aggregate_fn_kwargs)
 
-    def build_queryset(self):
+    def build_filtering_queryset(self):
         model = self.model.model_class()
         model_manager = model._default_manager
         queryset = model_manager.all()
-
         grouping_label = GroupingLabel(connection, self.params['labels'])
         queryset = grouping_label.apply_grouping(queryset)
-        # pop filters which are applied on annotated queryset
-        annotate_filters = self.pop_annotate_filters(
-            self.params.get('filters', {})
-        )
         queryset = self.apply_parital_filtering(queryset)
+        return queryset
+
+    def apply_aggregation(self, queryset, label, annotate_filters):
         queryset = queryset.values(
-            grouping_label.label
+            label
         ).annotate(
             series=self.get_aggregation(),
         )
         if annotate_filters:
             queryset = queryset.filter(**annotate_filters)
 
+        return queryset
+
+    def build_queryset(self):
+        label = GroupingLabel(connection, self.params['labels']).label
+        # pop filters which are applied on annotated queryset
+        annotate_filters = self.pop_annotate_filters(
+            self.params.get('filters', {})
+        )
+        queryset = self.build_filtering_queryset()
+        queryset = self.apply_aggregation(queryset, label, annotate_filters)
         queryset = self.apply_sort(queryset)
         queryset = self.apply_limit(queryset)
         return queryset
+
 
     def get_data(self):
         queryset = self.build_queryset()
