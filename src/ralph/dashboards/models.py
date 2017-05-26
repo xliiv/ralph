@@ -1,3 +1,4 @@
+from dateutil import parser
 from dj.choices import Choices
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection, models
@@ -90,12 +91,24 @@ class GroupingLabel:
     def has_group(self):
         return self.orig_label != self.label
 
+    def calc_value(self, value):
+        result = None
+        if self.label == 'year':
+            result = parser.parse(value).year
+        return result
+
+    def field_name(self):
+        return self.orig_label.split('__')[-1]
+
     def group_year(self):
-        field_name = self.orig_label.split('__')[-1]
-        return self.connection.ops.date_trunc_sql('year', field_name)
+        return self.connection.ops.date_trunc_sql('year', self.field_name())
 
     def apply_grouping(self, queryset):
         if self.has_group:
+            print({
+                # eg. 'year': 'group_year'
+                self.label: getattr(self, 'group_' + self.label)()
+            })
             queryset = queryset.extra({
                 # eg. 'year': 'group_year'
                 self.label: getattr(self, 'group_' + self.label)()
@@ -213,6 +226,18 @@ class Graph(AdminAbsoluteUrlMixin, NamedMixin, TimeStampMixin, models.Model):
         queryset = self.apply_limit(queryset)
         return queryset
 
+    def calc_somehow(self, queryset, clicked_item):
+        grouping_label = GroupingLabel(connection, self.params['labels'])
+        field_name = '__'.join(
+            [grouping_label.field_name(), grouping_label.label]
+        )
+        print({
+            field_name: grouping_label.calc_value(clicked_item)
+        })
+        queryset = queryset.filter(**{
+            field_name: grouping_label.calc_value(clicked_item)
+        })
+        return queryset
 
     def get_data(self):
         queryset = self.build_queryset()

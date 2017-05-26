@@ -29,7 +29,9 @@ class ByGraphFilter(admin.SimpleListFilter):
                 graph_item = None
             graph = get_object_or_404(Graph, pk=graph_pk)
             queryset = graph.build_filtering_queryset()
-            if not graph.has_grouping:
+            if graph.has_grouping:
+                queryset = graph.calc_somehow(queryset, graph_item)
+            else:
                 queryset = queryset.filter(
                     **{graph.params['labels']: graph_item}
                 )
